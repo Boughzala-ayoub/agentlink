@@ -948,6 +948,23 @@ agentlink adds under half a second to each leg; the rest is model time. Three de
 
 `agentlink_send` also says when a Codex thread runs with `--no-daemon`. The MCP server checks its parent's command line, because `codex queue` can never reach such a thread.
 
+**M4, 2026-10-19: pass for Claude desktop with Codex desktop, and for Cursor's hook. The VS Code and Gemini hooks pass unit tests only.** The demo used a new Codex desktop thread on `spikes/demo` and a new Claude desktop chat. Each loaded a scratch build of agentlink with a scratch `AGENTLINK_HOME`, Claude desktop through a temporary entry in `claude_desktop_config.json` and Codex through a project `.codex/config.toml`. `notes.md` held a retry policy with flaws planted in it. The user typed one prompt into Claude desktop, "Ask Codex to review notes.md in its project folder and list the two biggest problems", approved the tools, and typed nothing into Codex. Times come from the database.
+
+| Step | Time after Claude desktop sent the question |
+|---|---|
+| `codex queue` returned | 2.2 s |
+| The idle Codex desktop thread woke and read the question | 10.3 s |
+| Codex sent its answer | 30.2 s |
+| Claude desktop's `agentlink_inbox` wait returned the answer | 30.3 s, 65 ms after Codex sent it |
+
+Codex named the two flaws that matter most: retrying forever stalls every queued upload behind one bad file, and restarting at byte 0 throws away progress. Claude desktop was still waiting in `agentlink_inbox`, so no notification was needed.
+
+Then the pull path. With the Claude chat idle, the user asked Codex to send "Thanks, I'm done." to `claude-desktop`. agentlink showed the Windows toast 19 ms after the send, and typing `inbox` in the chat showed the message.
+
+Cursor: in cursor-agent CLI 2026.10.14 the stop hook answered with the wake line as `followup_message`, and Cursor ran it as a new turn. VS Code and Gemini weren't run live. `wake_test.go` checks the reply each hook prints, and checks for Cursor that a turn end with nothing new prints nothing and that a stopped turn or Cursor's loop limit is never continued.
+
+Cleanup: the Claude desktop entry came out with the app closed, Codex's trust entry for `spikes/demo` came out, and the rest of both files is unchanged.
+
 ---
 
 ## 8. Stack
