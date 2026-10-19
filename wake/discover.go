@@ -63,7 +63,10 @@ type codexThread struct {
 	Originator string `json:"originator"`
 }
 
-// codexThreads asks Codex's own app-server for its most recent interactive threads (spike 4).
+// codexThreads asks Codex's own app-server for its most recent desktop threads
+// (spike 4; their source is "vscode"). CLI threads are left out: one started
+// with --no-daemon, as Loom starts them, never drains `codex queue`, and only
+// its own first agentlink call tells agentlink which kind it is.
 func codexThreads() ([]codexThread, error) {
 	exe := CodexCommand()
 	if exe == "" {
@@ -81,7 +84,7 @@ func codexThreads() ([]codexThread, error) {
 	for _, m := range []any{
 		map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "agentlink", "version": "1"}}},
 		map[string]any{"method": "initialized"},
-		map[string]any{"id": 2, "method": "thread/list", "params": map[string]any{"sortKey": "recency_at", "limit": 100, "sourceKinds": []string{"cli", "vscode"}}},
+		map[string]any{"id": 2, "method": "thread/list", "params": map[string]any{"sortKey": "recency_at", "limit": 100, "sourceKinds": []string{"vscode"}}},
 	} {
 		b, _ := json.Marshal(m)
 		in.Write(append(b, '\n'))
