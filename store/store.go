@@ -24,6 +24,12 @@ const (
 	MaxBody   = 32 << 10
 	TTL       = 7 * 24 * time.Hour
 	DedupSpan = 2 * time.Minute
+
+	// Loop guards (PLAN.md 5.8). "Since a person typed" means since the last
+	// human input in any agent that takes part in the thread; see Human.
+	MaxHops        = 20 // messages in a thread since a person typed
+	MaxAgentWakes  = 8  // wakes in a thread since a person typed
+	MaxWakesPerMin = 6  // wakes of one recipient
 )
 
 // Now is the clock in unix milliseconds. Tests move it.
@@ -80,7 +86,12 @@ create table if not exists deliveries (
   last_error text not null default '', notified int not null default 0,
   primary key (seq, recipient));
 create index if not exists deliveries_open on deliveries(recipient, state);
-create index if not exists messages_sender on messages(sender, created_at);`
+create index if not exists messages_sender on messages(sender, created_at);
+create index if not exists messages_thread on messages(thread, created_at);
+create table if not exists threads (id text primary key, human_at int not null default 0);
+create table if not exists wakes (recipient text not null, thread text not null, at int not null);
+create index if not exists wakes_recipient on wakes(recipient, at);
+create index if not exists wakes_thread on wakes(thread, at);`
 
 // columns added after the first schema; adding one twice fails harmlessly
 var later = []string{`alter table endpoints add column waiting_until int not null default 0`}
@@ -377,7 +388,11 @@ func (s *Store) Send(from Endpoint, to []string, body, thread, replyTo string) (
 		thread = "t-" + randHex(3)
 	}
 	var hops int
-	tx.QueryRow(`select coalesce(max(hops),0) from messages where thread=?`, thread).Scan(&hops)
+	// >=: a message in the same millisecond as the human signal is usually that person's own turn sending
+	tx.QueryRow(`select count(*) from messages where thread=? and created_at>=`+humanAt, thread, thread).Scan(&hops)
+	if hops >= MaxHops {
+		return Sent{}, fmt.Errorf("Not sent: thread %s already has %d messages since a person last typed to one of its agents, so agentlink stopped it in case the agents are looping. Tell your user. The thread continues once they type to you or to the other agent, or run `agentlink resume %s`.", thread, hops, thread)
+	}
 	id := uuid()
 	res, err := tx.Exec(`insert into messages(id,thread,reply_to,sender,sender_app,body,created_at,expires_at,hops) values(?,?,?,?,?,?,?,?,?)`,
 		id, thread, replyTo, from.Handle, from.App, body, now, now+TTL.Milliseconds(), hops+1)
@@ -462,21 +477,107 @@ func (s *Store) Inbox(me, thread string) ([]Message, error) {
 // woken again. After this long agentlink assumes the wake got lost.
 const WakeFresh = 10 * time.Minute
 
-// NeedsWake reports whether handle has queued messages and no recent wake still unread.
-func (s *Store) NeedsWake(handle string) (bool, error) {
-	var queued, fresh int
-	err := s.db.QueryRow(`select
-		coalesce(sum(d.state='queued'),0), coalesce(sum(d.state='woken' and d.woken_at>?),0)
+// humanAt is when a person last typed in thread ?, as SQL.
+const humanAt = `coalesce((select human_at from threads where id=?),0)`
+
+// Why a loop guard held a wake back.
+const (
+	HeldPaused = "paused" // every thread with queued messages reached MaxAgentWakes
+	HeldRate   = "rate"   // the recipient reached MaxWakesPerMin
+)
+
+// NeedsWake reports whether handle should be woken now: it has queued
+// messages, no recent wake still unread, and the loop guards allow it. When a
+// guard holds the wake back, held is HeldPaused or HeldRate and the messages
+// stay queued. Pull apps are exempt: their wake is a notification, and only a
+// person can act on it.
+func (s *Store) NeedsWake(handle string) (need bool, held string, err error) {
+	now := Now()
+	var queued, open, fresh int
+	var tier string
+	err = s.db.QueryRow(`select coalesce(sum(d.state='queued'),0),
+		coalesce(sum(d.state='queued' and (select count(distinct w.at) from wakes w where w.thread=m.thread
+			and w.at>coalesce((select human_at from threads t where t.id=m.thread),0))<?),0),
+		coalesce(sum(d.state='woken' and d.woken_at>?),0),
+		coalesce((select tier from endpoints where handle=?),'')
 		from deliveries d join messages m on m.seq=d.seq where d.recipient=? and m.expires_at>?`,
-		Now()-WakeFresh.Milliseconds(), handle, Now()).Scan(&queued, &fresh)
-	return queued > 0 && fresh == 0, err
+		MaxAgentWakes, now-WakeFresh.Milliseconds(), handle, handle, now).Scan(&queued, &open, &fresh, &tier)
+	if err != nil || queued == 0 || fresh > 0 {
+		return false, "", err
+	}
+	if tier == "pull" {
+		return true, "", nil
+	}
+	if open == 0 {
+		return false, HeldPaused, nil
+	}
+	var recent int
+	if err := s.db.QueryRow(`select count(distinct at) from wakes where recipient=? and at>?`, handle, now-time.Minute.Milliseconds()).Scan(&recent); err != nil {
+		return false, "", err
+	}
+	if recent >= MaxWakesPerMin {
+		return false, HeldRate, nil
+	}
+	return true, "", nil
 }
 
 // MarkWoken records that handle was just woken for everything queued for it.
+// Each wake of an agent counts against the threads it covers.
 func (s *Store) MarkWoken(handle string) error {
-	_, err := s.db.Exec(`update deliveries set state='woken', woken_at=?, attempts=attempts+1, last_error=''
-		where recipient=? and state in ('queued','woken')`, Now(), handle)
+	now := Now()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`insert into wakes(recipient,thread,at) select distinct d.recipient, m.thread, ?
+		from deliveries d join messages m on m.seq=d.seq
+		where d.recipient=? and d.state in ('queued','woken') and (select tier from endpoints where handle=?) is not 'pull'`,
+		now, handle, handle); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`delete from wakes where at<?`, now-TTL.Milliseconds()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`update deliveries set state='woken', woken_at=?, attempts=attempts+1, last_error=''
+		where recipient=? and state in ('queued','woken')`, now, handle); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Human records that a person just typed in handle's conversation, which
+// restarts the loop guards of every thread handle takes part in.
+func (s *Store) Human(handle string) error {
+	_, err := s.db.Exec(`insert into threads(id,human_at)
+		select distinct thread, ? from messages where sender=? or seq in (select seq from deliveries where recipient=?)
+		on conflict(id) do update set human_at=excluded.human_at`, Now(), handle, handle)
 	return err
+}
+
+// Resume restarts thread's loop guards, as if a person had typed in it, and
+// returns the recipients that still have queued messages there.
+func (s *Store) Resume(thread string) ([]Endpoint, error) {
+	if _, err := s.db.Exec(`insert into threads(id,human_at) values(?,?)
+		on conflict(id) do update set human_at=excluded.human_at`, thread, Now()); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`select distinct e.handle,e.app,e.project,e.session,e.tier,e.wake,e.last_seen
+		from deliveries d join messages m on m.seq=d.seq join endpoints e on e.handle=d.recipient
+		where m.thread=? and d.state='queued' and m.expires_at>? order by e.handle`, thread, Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Endpoint
+	for rows.Next() {
+		var e Endpoint
+		if err := rows.Scan(&e.Handle, &e.App, &e.Project, &e.Session, &e.Tier, &e.Wake, &e.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // WakeFailed records why waking handle failed; its messages stay queued.

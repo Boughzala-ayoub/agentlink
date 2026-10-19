@@ -1,0 +1,105 @@
+# Tests on all three OSes, runs both install scripts against a local copy of a
+# release in a fake home folder, and on a v* tag publishes the six executables
+# with checksums.txt, the files install.ps1 and install.sh download.
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: install.sh against a local release
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          case "$(uname -s)" in Darwin) os=darwin ;; *) os=linux ;; esac
+          case "$(uname -m)" in x86_64) arch=amd64 ;; *) arch=arm64 ;; esac
+          asset="agentlink-$os-$arch"
+          mkdir rel
+          CGO_ENABLED=0 go build -o "rel/$asset" ./cmd/agentlink
+          (cd rel && { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > checksums.txt)
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory rel >/dev/null 2>&1 &
+          sleep 2
+          export AGENTLINK_BASE_URL=http://127.0.0.1:8765
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"   # apps for setup to find
+          sh install.sh </dev/null                                   # no terminal: it installs and says to run setup
+          "$HOME/.agentlink/bin/agentlink" setup --yes
+          "$HOME/.agentlink/bin/agentlink" doctor
+          grep -q agentlink "$HOME/.claude.json" "$HOME/.codex/config.toml" "$HOME/.gemini/settings.json"
+          "$HOME/.agentlink/bin/agentlink" uninstall --yes
+          if grep -qs agentlink "$HOME/.codex/config.toml"; then echo "uninstall left agentlink in Codex's config"; exit 1; fi
+          # A wrong checksum installs nothing.
+          export HOME="$RUNNER_TEMP/home2"
+          mkdir -p "$HOME"
+          printf '%064d  %s\n' 0 "$asset" > rel/checksums.txt
+          if sh install.sh </dev/null; then echo "install.sh accepted a wrong checksum"; exit 1; fi
+          test ! -e "$HOME/.agentlink/bin/agentlink"
+
+      - name: install.ps1 against a local release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = 'agentlink-windows-amd64.exe'
+          New-Item -ItemType Directory rel | Out-Null
+          $env:CGO_ENABLED = '0'
+          go build -o "rel/$asset" ./cmd/agentlink
+          "$((Get-FileHash "rel/$asset" -Algorithm SHA256).Hash.ToLower())  $asset" | Set-Content rel/checksums.txt
+          Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', 'rel' -WindowStyle Hidden
+          Start-Sleep 2
+          $env:AGENTLINK_BASE_URL = 'http://127.0.0.1:8765'
+          $h = "$env:RUNNER_TEMP\home"
+          $env:USERPROFILE = $h; $env:APPDATA = "$h\AppData\Roaming"; $env:LOCALAPPDATA = "$h\AppData\Local"; $env:AGENTLINK_HOME = "$h\.agentlink"
+          New-Item -ItemType Directory "$h\.claude" -Force | Out-Null
+          # stdin is NUL, so setup lists its changes and stops at the question.
+          $out = cmd /c "pwsh -NoProfile -File install.ps1 < NUL 2>&1" | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Go ahead\?') { throw 'install.ps1 never reached setup' }
+          "$('0' * 64)  $asset" | Set-Content rel/checksums.txt
+          $out = cmd /c "pwsh -NoProfile -File install.ps1 < NUL 2>&1" | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Checksum mismatch') { throw 'install.ps1 accepted a wrong checksum' }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build the six executables
+        run: |
+          mkdir dist
+          for t in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${t%/*} arch=${t#*/} ext=
+            [ "$os" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X agentlink/mcp.Version=$GITHUB_REF_NAME" \
+              -o "dist/agentlink-$os-$arch$ext" ./cmd/agentlink
+          done
+          (cd dist && sha256sum agentlink-* > checksums.txt)
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

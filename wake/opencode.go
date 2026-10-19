@@ -14,9 +14,10 @@ import (
 )
 
 // OpencodeFeed runs as a child of agentlink's opencode plugin. The plugin
-// writes {"session","directory"} lines for the sessions it sees; the feed
-// registers them and writes {"session","text"} back when one needs waking, and
-// the plugin turns that into ctx.session.prompt (spike 5). It ends with stdin.
+// writes {"session","directory","human"} lines for the sessions it sees, with
+// human set when a person started the run; the feed registers them and writes
+// {"session","text"} back when one needs waking, and the plugin turns that
+// into ctx.session.prompt (spike 5). It ends with stdin.
 func OpencodeFeed(st *store.Store, in io.Reader, out io.Writer) error {
 	pid := os.Getppid() // the opencode server: agentlink's MCP server is its child too
 	var mu sync.Mutex
@@ -25,7 +26,10 @@ func OpencodeFeed(st *store.Store, in io.Reader, out io.Writer) error {
 	go func() {
 		sc := bufio.NewScanner(in)
 		for sc.Scan() {
-			var m struct{ Session, Directory string }
+			var m struct {
+				Session, Directory string
+				Human              bool
+			}
 			if json.Unmarshal(sc.Bytes(), &m) != nil || m.Session == "" {
 				continue
 			}
@@ -38,6 +42,9 @@ func OpencodeFeed(st *store.Store, in io.Reader, out io.Writer) error {
 			}
 			mu.Unlock()
 			st.Register(e) // also marks it as the most recently active opencode session
+			if m.Human {
+				st.Human(e.Handle)
+			}
 		}
 		done <- sc.Err()
 	}()
@@ -55,7 +62,7 @@ func OpencodeFeed(st *store.Store, in io.Reader, out io.Writer) error {
 		}
 		mu.Unlock()
 		for _, e := range list {
-			if need, _ := st.NeedsWake(e.Handle); need {
+			if need, _, _ := st.NeedsWake(e.Handle); need {
 				if err := enc.Encode(map[string]string{"session": e.Session, "text": Line(st, e, "")}); err != nil {
 					return err
 				}

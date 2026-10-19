@@ -130,7 +130,7 @@ func TestDeadSocketKeepsMessageQueued(t *testing.T) {
 	if s := Deliver(st, cc, sent); !strings.HasPrefix(s, "stored, not woken: posting to its Claude Code session failed") {
 		t.Fatal(s)
 	}
-	if need, _ := st.NeedsWake(cc.Handle); !need {
+	if need, _, _ := st.NeedsWake(cc.Handle); !need {
 		t.Fatal("a failed wake must leave the message waiting for the next wake")
 	}
 }
@@ -242,5 +242,41 @@ func TestVSCodeAndGeminiHooks(t *testing.T) {
 		if !strings.HasPrefix(out.String(), c.want) {
 			t.Errorf("%s %s: %s", c.host, c.event, out.String())
 		}
+	}
+}
+
+// Claude Code's UserPromptSubmit hook lifts a loop-guard pause when a person
+// types, but not for agentlink's own wake line arriving as a prompt.
+func TestClaudeCodePromptHook(t *testing.T) {
+	st := openStore(t)
+	defer func() { store.Now = func() int64 { return time.Now().UnixMilli() } }()
+	clock := time.Now().UnixMilli()
+	store.Now = func() int64 { return clock }
+	t.Setenv("CLAUDE_PROJECT_DIR", "/work/proj")
+	cc := store.Endpoint{Handle: store.Handle("claude-code", "/work/proj", "sess-abcd"), App: "claude-code", Tier: "push"}
+	st.Register(cc)
+	from := store.Endpoint{Handle: "codex-x", App: "codex"}
+	sent, _ := st.Send(from, []string{cc.Handle}, "0", "", "")
+	for i := 1; i <= store.MaxAgentWakes; i++ {
+		clock += 20_000
+		st.MarkWoken(cc.Handle)
+		st.Inbox(cc.Handle, "")
+		st.Send(from, []string{cc.Handle}, fmt.Sprint(i), sent.Thread, "")
+	}
+	prompt := func(text string) {
+		clock++
+		in, _ := json.Marshal(map[string]string{"session_id": "sess-abcd", "cwd": "/elsewhere", "prompt": text, "hook_event_name": "UserPromptSubmit"})
+		var out strings.Builder
+		if err := Hook(st, "claude-code", "prompt", strings.NewReader(string(in)), &out); err != nil || out.Len() > 0 {
+			t.Fatalf("hook: %v, printed %q", err, out.String())
+		}
+	}
+	prompt(Line(st, cc, sent.Thread))
+	if _, held, _ := st.NeedsWake(cc.Handle); held != store.HeldPaused {
+		t.Fatalf("the wake line counted as a person: held %q", held)
+	}
+	prompt("keep going")
+	if need, _, _ := st.NeedsWake(cc.Handle); !need {
+		t.Fatal("still paused after the user typed")
 	}
 }

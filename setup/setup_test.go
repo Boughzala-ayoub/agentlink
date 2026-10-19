@@ -118,7 +118,8 @@ func TestSetupAndUninstall(t *testing.T) {
 	if get(cc, "mcpServers", "agentlink", "command") != exe || get(cc, "mcpServers", "github", "command") != "gh-mcp" || get(cc, "numStartups") != 12.0 {
 		t.Errorf(".claude.json: %v", cc)
 	}
-	if s := read(t, home, ".claude/settings.json"); !strings.Contains(s, `"mcp__agentlink"`) || !strings.Contains(s, `"Bash(git status)"`) || !strings.Contains(s, "loom.exe --hook stop") {
+	if s := read(t, home, ".claude/settings.json"); !strings.Contains(s, `"mcp__agentlink"`) || !strings.Contains(s, `"Bash(git status)"`) || !strings.Contains(s, "loom.exe --hook stop") ||
+		!strings.HasSuffix(get(get(decode(t, s), "hooks", "UserPromptSubmit").([]any)[0], "hooks").([]any)[0].(map[string]any)["command"].(string), " hook claude-code prompt") {
 		t.Errorf("settings.json:\n%s", s)
 	}
 	for _, rel := range []string{"AppData/Roaming/Claude/claude_desktop_config.json", "AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json"} {
@@ -181,7 +182,7 @@ func TestSetupAndUninstall(t *testing.T) {
 	moved := `D:\tools\agentlink.exe`
 	setup(t, e, moved)
 	stop = get(decode(t, read(t, home, ".cursor/hooks.json")), "hooks", "stop").([]any)
-	if len(stop) != 2 || !strings.HasPrefix(get(stop[1], "command").(string), moved) {
+	if len(stop) != 2 || get(stop[1], "command") != "D:/tools/agentlink.exe hook cursor stop" { // forward slashes for Git Bash
 		t.Errorf("hooks after move: %v", stop)
 	}
 	if toml := read(t, home, ".codex/config.toml"); strings.Count(toml, "[mcp_servers.agentlink]") != 1 || !strings.Contains(toml, moved) {

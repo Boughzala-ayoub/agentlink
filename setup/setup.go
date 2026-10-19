@@ -93,9 +93,13 @@ var Apps = []App{
 		Edits: func(e Env, exe string) []edit {
 			entry := stdioEntry(exe, "claude-code")
 			entry["type"] = "stdio"
+			settings := filepath.Join(e.Home, ".claude", "settings.json")
+			// It only tells the loop guard that a person typed, and prints nothing (PLAN.md 5.8).
+			group := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": hookCommand(exe, "claude-code", "prompt"), "timeout": 10}}}
 			return []edit{
 				jsonKey(filepath.Join(e.Home, ".claude.json"), "add the agentlink MCP server", "/mcpServers/agentlink", entry),
-				jsonListItem(filepath.Join(e.Home, ".claude", "settings.json"), "allow agentlink's own tools", "/permissions/allow", "mcp__agentlink", nil),
+				jsonListItem(settings, "allow agentlink's own tools", "/permissions/allow", "mcp__agentlink", nil),
+				jsonListItem(settings, "add agentlink's UserPromptSubmit hook", "/hooks/UserPromptSubmit", group, isHookGroup("claude-code", "prompt")),
 			}
 		},
 	},
@@ -194,21 +198,19 @@ var Apps = []App{
 				"command": hookCommand(exe, "gemini", "after-agent"), "timeout": 10000}}}
 			return []edit{
 				jsonKey(settings, "add the agentlink MCP server", "/mcpServers/agentlink", entry),
-				jsonListItem(settings, "add agentlink's AfterAgent hook", "/hooks/AfterAgent", group, func(x any) bool {
-					m, _ := x.(map[string]any)
-					hs, _ := m["hooks"].([]any)
-					return len(hs) == 1 && isHook("gemini", "after-agent")(hs[0])
-				}),
+				jsonListItem(settings, "add agentlink's AfterAgent hook", "/hooks/AfterAgent", group, isHookGroup("gemini", "after-agent")),
 			}
 		},
 	},
 }
 
-// hookCommand is the command line a hook entry runs.
+// hookCommand is the command line a hook entry runs. Forward slashes, because
+// Claude Code runs hooks through Git Bash on Windows, which eats backslashes;
+// cmd and PowerShell take either.
 func hookCommand(exe, host, event string) string {
-	q := exe
-	if strings.ContainsAny(exe, " \t") {
-		q = `"` + exe + `"`
+	q := strings.ReplaceAll(exe, `\`, "/")
+	if strings.ContainsAny(q, " \t") {
+		q = `"` + q + `"`
 	}
 	return q + " hook " + host + " " + event
 }
@@ -219,6 +221,15 @@ func isHook(host, event string) func(any) bool {
 		m, _ := x.(map[string]any)
 		c, _ := m["command"].(string)
 		return strings.Contains(strings.ToLower(c), "agentlink") && strings.HasSuffix(c, " hook "+host+" "+event)
+	}
+}
+
+// isHookGroup matches a {"hooks": [agentlink's hook]} group, the shape Claude Code and Gemini use.
+func isHookGroup(host, event string) func(any) bool {
+	return func(x any) bool {
+		m, _ := x.(map[string]any)
+		hs, _ := m["hooks"].([]any)
+		return len(hs) == 1 && isHook(host, event)(hs[0])
 	}
 }
 

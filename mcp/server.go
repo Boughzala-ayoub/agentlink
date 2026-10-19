@@ -34,7 +34,7 @@ var Hosts = map[string]Host{
 	"cursor":         {"Cursor", "turn", nil},
 	"vscode":         {"VS Code", "turn", nil},
 	"gemini":         {"Gemini CLI", "turn", nil},
-	"devin":          {"Devin", "turn", nil},
+	"devin":          {"Devin", "pull", nil}, // turn once v0.2 installs its hooks
 }
 
 // hostOfClient returns the host whose app sends this clientInfo.name, or "".
@@ -117,7 +117,8 @@ type Server struct {
 	inflight map[string]*inflight
 	client   string
 	self     store.Endpoint
-	parent   chan string // the parent's command line, read once at startup
+	parent   chan string       // the parent's command line, read once at startup
+	turns    map[string]string // Codex thread id -> the last human turn counted
 }
 
 type inflight struct {
@@ -136,7 +137,7 @@ func (s *Server) Serve(in io.Reader, out io.Writer) error {
 	if s.Env == nil {
 		s.Env = os.Getenv
 	}
-	s.out, s.inflight = out, map[string]*inflight{}
+	s.out, s.inflight, s.turns = out, map[string]*inflight{}, map[string]string{}
 	h, ok := Hosts[s.Host]
 	if !ok {
 		return fmt.Errorf("unknown --host %q", s.Host)
@@ -168,7 +169,7 @@ func (s *Server) Serve(in io.Reader, out io.Writer) error {
 	if s.self.Wake != "" { // messages that arrived while this session was down
 		go func() {
 			time.Sleep(2 * time.Second)
-			if need, _ := s.Store.NeedsWake(s.self.Handle); need {
+			if need, _, _ := s.Store.NeedsWake(s.self.Handle); need {
 				s.Wake(s.self, store.Sent{})
 			}
 		}()
@@ -313,6 +314,10 @@ func (s *Server) call(ctx context.Context, name string, raw, meta json.RawMessag
 	if err != nil {
 		return "", err
 	}
+	if Hosts[s.Host].Tier == "pull" { // nothing can wake a pull app, so a person started every turn it runs
+		// ponytail: a whole chat turn counts as human; Claude desktop sends no turn id to count once per turn
+		s.Store.Human(me.Handle)
+	}
 	var out string
 	switch name {
 	case "agentlink_peers":
@@ -355,6 +360,8 @@ func (s *Server) whoami(me string, meta json.RawMessage) (store.Endpoint, error)
 			ThreadID string `json:"threadId"`
 			Turn     struct {
 				ThreadID   string                     `json:"thread_id"`
+				TurnID     string                     `json:"turn_id"`
+				Trigger    string                     `json:"turn_trigger"`
 				Workspaces map[string]json.RawMessage `json:"workspaces"`
 			} `json:"x-codex-turn-metadata"`
 		}
@@ -370,7 +377,21 @@ func (s *Server) whoami(me string, meta json.RawMessage) (store.Endpoint, error)
 				break
 			}
 			e := store.Endpoint{Handle: store.Handle("codex", dir, tid), App: "codex", Project: base(dir), Session: tid, Tier: "push", Wake: s.codexWake()}
-			return e, s.Store.Register(e)
+			if err := s.Store.Register(e); err != nil {
+				return e, err
+			}
+			// A person typed this turn in the TUI ("user") or the desktop ("composer"); agentlink's wakes say "queue"
+			// (spikes 1 and 4). Count it once per turn, so one long turn can't keep restarting the guards.
+			if m.Turn.Trigger == "user" || m.Turn.Trigger == "composer" {
+				s.mu.Lock()
+				first := s.turns[tid] != m.Turn.TurnID
+				s.turns[tid] = m.Turn.TurnID
+				s.mu.Unlock()
+				if first {
+					return e, s.Store.Human(e.Handle)
+				}
+			}
+			return e, nil
 		}
 		e := store.Endpoint{Handle: "codex", App: "codex", Tier: "push"}
 		return e, s.Store.Register(e)

@@ -150,3 +150,42 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("socket not registered: %+v", ep)
 	}
 }
+
+// A Codex turn a person typed lifts the loop guards once, however many
+// agentlink calls that turn makes; agentlink's own queued turns never do.
+func TestCodexHumanTurn(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	st.Register(store.Endpoint{Handle: "b", App: "claude-code", Tier: "push"})
+	codex := start(t, st, "codex", nil)
+	codex.rpc("initialize", map[string]any{"protocolVersion": "2025-06-18", "clientInfo": map[string]any{"name": "codex-mcp-client"}})
+	meta := func(trigger, turn string) map[string]any {
+		return map[string]any{"threadId": "th-1234", "x-codex-turn-metadata": map[string]any{
+			"thread_id": "th-1234", "turn_id": turn, "turn_trigger": trigger, "workspaces": map[string]any{`C:\work\wisp`: map[string]any{}}}}
+	}
+	me := store.Endpoint{Handle: "codex-wisp-1234", App: "codex", Tier: "push"}
+	first, _ := st.Send(me, []string{"b"}, "m0", "", "")
+	n := 0 // distinct bodies, or the 2-minute dedup drops them
+	fill := func(k int) {
+		for i := 0; i < k; i++ {
+			n++
+			if _, err := st.Send(me, []string{"b"}, fmt.Sprint("fill ", n), first.Thread, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	send := func(trigger, turn string, wantErr bool) {
+		t.Helper()
+		n++
+		codex.tool("agentlink_send", map[string]any{"to": "b", "text": fmt.Sprint(trigger, " ", turn, " ", n), "thread": first.Thread}, meta(trigger, turn), wantErr)
+	}
+	fill(store.MaxHops - 1)
+	send("queue", "q1", true)     // 20 agent messages: stopped
+	send("composer", "t1", false) // a person typed in Codex
+	fill(store.MaxHops - 1)       // the same turn goes on talking
+	send("composer", "t1", true)  // and counts as a person only once
+	send("user", "t2", false)     // the next turn they type does again
+}

@@ -21,7 +21,8 @@ func TestMain(m *testing.M) {
 		os.Exit(child(func(s *Store, id string) error {
 			from := Endpoint{Handle: "w" + id, App: "test"}
 			for i := 0; i < 50; i++ {
-				if _, err := s.Send(from, []string{"sink"}, fmt.Sprintf("w%s-%d", id, i), "t-load", ""); err != nil {
+				// a new thread each, since one thread stops at MaxHops
+				if _, err := s.Send(from, []string{"sink"}, fmt.Sprintf("w%s-%d", id, i), "", ""); err != nil {
 					return err
 				}
 			}
@@ -281,5 +282,101 @@ func TestHandle(t *testing.T) {
 		if got := Handle(c[0], c[1], c[2]); got != c[3] {
 			t.Errorf("Handle%v = %s", c[:3], got)
 		}
+	}
+}
+
+// Two agents that keep waking each other pause after MaxAgentWakes, a thread
+// stops at MaxHops messages, one recipient gets at most MaxWakesPerMin wakes a
+// minute, and a person typing in any agent of the thread restarts the count.
+func TestLoopGuards(t *testing.T) {
+	s, _ := open(t)
+	defer func() { Now = func() int64 { return time.Now().UnixMilli() } }()
+	clock := time.Now().UnixMilli()
+	Now = func() int64 { return clock }
+	a := Endpoint{Handle: "a", App: "codex", Tier: "push"}
+	b := Endpoint{Handle: "b", App: "claude-code", Tier: "push"}
+	s.Register(a)
+	s.Register(b)
+
+	// Ping-pong: each message wakes the other agent, which reads it and answers.
+	m, _ := s.Send(a, []string{"b"}, "start", "", "")
+	from, to, wakes := a, b, 0
+	for {
+		clock += 20_000 // three wakes a minute, under the rate limit
+		need, held, err := s.NeedsWake(to.Handle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !need {
+			if held != HeldPaused {
+				t.Fatalf("wake %d held back by %q, want %q", wakes+1, held, HeldPaused)
+			}
+			break
+		}
+		s.MarkWoken(to.Handle)
+		wakes++
+		s.Inbox(to.Handle, "")
+		from, to = to, from
+		if _, err := s.Send(from, []string{to.Handle}, fmt.Sprint("reply ", wakes), m.Thread, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if wakes != MaxAgentWakes {
+		t.Fatalf("paused after %d wakes, want %d", wakes, MaxAgentWakes)
+	}
+	clock++
+	s.Human(from.Handle) // a person typed in the agent that sent last
+	if need, _, _ := s.NeedsWake(to.Handle); !need {
+		t.Fatal("still paused after a person typed")
+	}
+
+	// Agents waiting in agentlink_inbox need no wakes, so the hop count stops them.
+	s.Inbox(to.Handle, "")
+	for i := 1; ; i++ {
+		clock++
+		_, err := s.Send(a, []string{"b"}, fmt.Sprint("hop ", i), m.Thread, "")
+		if err != nil {
+			if i != MaxHops+1 || !strings.Contains(err.Error(), "agentlink resume "+m.Thread) {
+				t.Fatalf("send %d: %v", i, err)
+			}
+			break
+		}
+	}
+	clock++
+	if rs, err := s.Resume(m.Thread); err != nil || len(rs) != 1 || rs[0].Handle != "b" {
+		t.Fatalf("resume = %v, %v; want b, which has unread messages", rs, err)
+	}
+	clock++
+	if _, err := s.Send(a, []string{"b"}, "after resume", m.Thread, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The rate limit counts wakes of one recipient across threads. A pull app's
+	// notification isn't a wake: only a person can act on it.
+	c := Endpoint{Handle: "c", App: "cursor", Tier: "turn"}
+	d := Endpoint{Handle: "d", App: "claude-desktop", Tier: "pull"}
+	s.Register(c)
+	s.Register(d)
+	for i := 1; i <= MaxWakesPerMin+1; i++ {
+		clock += 1000
+		s.Send(a, []string{"c", "d"}, fmt.Sprint("new thread ", i), "", "")
+		need, held, _ := s.NeedsWake("c")
+		if want := i <= MaxWakesPerMin; need != want || (!want && held != HeldRate) {
+			t.Fatalf("wake %d of c: need %v held %q", i, need, held)
+		}
+		if dn, _, _ := s.NeedsWake("d"); !dn {
+			t.Fatalf("notification %d for d held back", i)
+		}
+		if need {
+			s.MarkWoken("c")
+		}
+		s.MarkWoken("d")
+		s.Inbox("c", "")
+		s.Inbox("d", "")
+	}
+	clock += time.Minute.Milliseconds()
+	s.Send(a, []string{"c"}, "a minute later", "", "")
+	if need, _, _ := s.NeedsWake("c"); !need {
+		t.Fatal("c still held back a minute later")
 	}
 }

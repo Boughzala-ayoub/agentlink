@@ -3,16 +3,15 @@ package main
 
 import (
 	"bufio"
-	"path/filepath"
-
-	"agentlink/setup"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"agentlink/mcp"
+	"agentlink/setup"
 	"agentlink/store"
 	"agentlink/wake"
 )
@@ -25,6 +24,7 @@ const usage = `agentlink: messaging between the AI agents on this machine.
   agentlink peers                     list the agents agentlink knows
   agentlink watch                     print every message as it is sent
   agentlink send [flags] <to> <text>  send a message as "cli"
+  agentlink resume <thread>           let a thread the loop guard paused go on
   agentlink mcp --host <app>          stdio MCP server; each app starts this itself
 
 Apps: claude-code, claude-desktop, codex, opencode, cursor, vscode, gemini, devin.
@@ -46,7 +46,7 @@ func main() {
 		}
 	case "uninstall":
 		err = runUninstall(rest)
-	case "hook": // agentlink hook <app> <event>, run by an app at the end of a turn
+	case "hook": // agentlink hook <app> <event>, run by an app's hooks
 		var st *store.Store
 		if len(rest) == 2 {
 			if st, err = open(); err == nil {
@@ -68,6 +68,8 @@ func main() {
 		err = runMCP(rest)
 	case "send":
 		err = runSend(rest)
+	case "resume":
+		err = runResume(rest)
 	case "peers":
 		err = runPeers()
 	case "watch":
@@ -286,6 +288,11 @@ func runSend(args []string) error {
 	if err := st.Register(cli); err != nil {
 		return err
 	}
+	if *thread != "" { // a person writing into a thread counts as a person typing in it
+		if _, err := st.Resume(*thread); err != nil {
+			return err
+		}
+	}
 	wake.Discover(st, fs.Arg(0))
 	rcpt, err := st.Resolve(cli, fs.Arg(0))
 	if err != nil {
@@ -306,6 +313,27 @@ func runSend(args []string) error {
 	fmt.Printf("sent %s in thread %s\n", sent.ID, sent.Thread)
 	for _, r := range rcpt {
 		fmt.Printf("  %s: %s\n", r.Handle, wake.Deliver(st, r, sent))
+	}
+	return nil
+}
+
+// runResume restarts a thread's loop guards and wakes whoever still has unread messages in it.
+func runResume(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: agentlink resume <thread>")
+	}
+	st, err := open()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	rs, err := st.Resume(args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("thread %s can go on\n", args[0])
+	for _, r := range rs {
+		fmt.Printf("  %s: %s\n", r.Handle, wake.Deliver(st, r, store.Sent{Thread: args[0]}))
 	}
 	return nil
 }

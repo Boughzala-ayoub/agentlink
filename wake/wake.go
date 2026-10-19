@@ -54,9 +54,15 @@ func Deliver(st *store.Store, r store.Endpoint, sent store.Sent) string {
 			}
 		}
 	}
-	need, err := st.NeedsWake(r.Handle)
+	need, held, err := st.NeedsWake(r.Handle)
 	if err != nil {
 		return "stored. Couldn't check whether it needs waking: " + err.Error()
+	}
+	switch held {
+	case store.HeldPaused:
+		return fmt.Sprintf("stored, not woken: its threads have had %d agent-to-agent wakes since a person last typed to one of their agents, so agentlink paused them in case the agents are looping. Tell your user. It goes on once they type to you or to it, or run `agentlink resume %s`.", store.MaxAgentWakes, sent.Thread)
+	case store.HeldRate:
+		return fmt.Sprintf("stored, not woken: it was already woken %d times in the last minute. It sees this at its next agentlink call or the next wake after that minute.", store.MaxWakesPerMin)
 	}
 	if !need {
 		if r.Tier == "pull" {
