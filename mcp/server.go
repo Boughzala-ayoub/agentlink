@@ -345,6 +345,11 @@ func (s *Server) whoami(me string, meta json.RawMessage) (store.Endpoint, error)
 		return store.Endpoint{}, fmt.Errorf("this agentlink entry is configured for %s (--host %s), but %s is running it. %s has its own agentlink entry; use that one. Run `agentlink setup` if it is missing.",
 			Hosts[s.Host].Name, s.Host, client, Hosts[h].Name)
 	}
+	if s.Host == "codex" { // _meta names the thread exactly, so it wins over `me`, which the wake line suggests
+		if e, ok, err := s.codexThread(meta); ok {
+			return e, err
+		}
+	}
 	if me != "" {
 		e, err := s.Store.Get(strings.ToLower(me))
 		if err != nil {
@@ -356,43 +361,6 @@ func (s *Server) whoami(me string, meta json.RawMessage) (store.Endpoint, error)
 		return e, nil
 	}
 	if s.Host == "codex" {
-		var m struct {
-			ThreadID string `json:"threadId"`
-			Turn     struct {
-				ThreadID   string                     `json:"thread_id"`
-				TurnID     string                     `json:"turn_id"`
-				Trigger    string                     `json:"turn_trigger"`
-				Workspaces map[string]json.RawMessage `json:"workspaces"`
-			} `json:"x-codex-turn-metadata"`
-		}
-		json.Unmarshal(meta, &m)
-		tid := m.ThreadID
-		if tid == "" {
-			tid = m.Turn.ThreadID
-		}
-		if tid != "" {
-			dir := ""
-			for w := range m.Turn.Workspaces {
-				dir = w
-				break
-			}
-			e := store.Endpoint{Handle: store.Handle("codex", dir, tid), App: "codex", Project: base(dir), Session: tid, Tier: "push", Wake: s.codexWake()}
-			if err := s.Store.Register(e); err != nil {
-				return e, err
-			}
-			// A person typed this turn in the TUI ("user") or the desktop ("composer"); agentlink's wakes say "queue"
-			// (spikes 1 and 4). Count it once per turn, so one long turn can't keep restarting the guards.
-			if m.Turn.Trigger == "user" || m.Turn.Trigger == "composer" {
-				s.mu.Lock()
-				first := s.turns[tid] != m.Turn.TurnID
-				s.turns[tid] = m.Turn.TurnID
-				s.mu.Unlock()
-				if first {
-					return e, s.Store.Human(e.Handle)
-				}
-			}
-			return e, nil
-		}
 		e := store.Endpoint{Handle: "codex", App: "codex", Tier: "push"}
 		return e, s.Store.Register(e)
 	}
@@ -407,6 +375,49 @@ func (s *Server) whoami(me string, meta json.RawMessage) (store.Endpoint, error)
 		}
 	}
 	return s.self, s.Store.Register(s.self)
+}
+
+// codexThread registers the Codex thread a tool call's _meta names, and
+// records human input when a person started the turn. ok is false without a thread id.
+func (s *Server) codexThread(meta json.RawMessage) (store.Endpoint, bool, error) {
+	var m struct {
+		ThreadID string `json:"threadId"`
+		Turn     struct {
+			ThreadID   string                     `json:"thread_id"`
+			TurnID     string                     `json:"turn_id"`
+			Trigger    string                     `json:"turn_trigger"`
+			Workspaces map[string]json.RawMessage `json:"workspaces"`
+		} `json:"x-codex-turn-metadata"`
+	}
+	json.Unmarshal(meta, &m)
+	tid := m.ThreadID
+	if tid == "" {
+		tid = m.Turn.ThreadID
+	}
+	if tid == "" {
+		return store.Endpoint{}, false, nil
+	}
+	dir := ""
+	for w := range m.Turn.Workspaces {
+		dir = w
+		break
+	}
+	e := store.Endpoint{Handle: store.Handle("codex", dir, tid), App: "codex", Project: base(dir), Session: tid, Tier: "push", Wake: s.codexWake()}
+	if err := s.Store.Register(e); err != nil {
+		return e, true, err
+	}
+	// A person typed this turn in the TUI ("user") or the desktop ("composer"); agentlink's wakes say "queue"
+	// (spikes 1 and 4). Count it once per turn, so one long turn can't keep restarting the guards.
+	if m.Turn.Trigger == "user" || m.Turn.Trigger == "composer" {
+		s.mu.Lock()
+		first := s.turns[tid] != m.Turn.TurnID
+		s.turns[tid] = m.Turn.TurnID
+		s.mu.Unlock()
+		if first {
+			return e, true, s.Store.Human(e.Handle)
+		}
+	}
+	return e, true, nil
 }
 
 func base(dir string) string {

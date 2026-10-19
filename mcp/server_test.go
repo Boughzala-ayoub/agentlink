@@ -152,7 +152,8 @@ func TestRoundTrip(t *testing.T) {
 }
 
 // A Codex turn a person typed lifts the loop guards once, however many
-// agentlink calls that turn makes; agentlink's own queued turns never do.
+// agentlink calls that turn makes, and even when the call names `me` as the
+// wake line suggests; agentlink's own queued turns never do.
 func TestCodexHumanTurn(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "a.db"))
 	if err != nil {
@@ -180,7 +181,7 @@ func TestCodexHumanTurn(t *testing.T) {
 	send := func(trigger, turn string, wantErr bool) {
 		t.Helper()
 		n++
-		codex.tool("agentlink_send", map[string]any{"to": "b", "text": fmt.Sprint(trigger, " ", turn, " ", n), "thread": first.Thread}, meta(trigger, turn), wantErr)
+		codex.tool("agentlink_send", map[string]any{"me": "codex-wisp-1234", "to": "b", "text": fmt.Sprint(trigger, " ", turn, " ", n), "thread": first.Thread}, meta(trigger, turn), wantErr)
 	}
 	fill(store.MaxHops - 1)
 	send("queue", "q1", true)     // 20 agent messages: stopped
