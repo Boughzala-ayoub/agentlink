@@ -988,6 +988,23 @@ Cleanup: the Claude desktop entry came out with the app closed, Codex's trust en
 
 `pwned.txt` never appeared, and no stored message contains the canary. One side effect: Sonnet's refusal to the fake peer made agentlink run the real `codex queue` against a thread id that doesn't exist. Codex answered "no rollout found" and queued nothing.
 
+**M5 install check, 2026-10-19: pass, on the user's own Windows profile rather than a clean one.** The user chose their real profile, the way they will use agentlink, over setting up a new Windows account. The release was a local build, `v0.1.0-rc1`, served from `127.0.0.1:8765`. The user pasted `$env:AGENTLINK_BASE_URL='http://127.0.0.1:8765'; irm http://127.0.0.1:8765/install.ps1 | iex` into PowerShell and confirmed once. Setup wired up Claude Code, Claude desktop, Codex, Cursor, VS Code, Devin and opencode, and doctor printed no `FIX` line. After the restarts, the user opened a new Codex desktop thread on `spikes/demo` and a new Claude desktop chat, and asked Codex in that chat to review `notes.md`. They typed nothing else.
+
+| Step | Time after Claude desktop sent the question |
+|---|---|
+| `codex queue` returned | 1.2 s |
+| The Codex desktop thread woke and read the question | 13.1 s |
+| Codex sent its answer | 40.8 s |
+| Claude desktop's `agentlink_inbox` wait returned the answer | 41.1 s |
+
+On this fresh mailbox, `to: "codex"` went through discovery, which registered the five newest Codex desktop threads and picked the new one. Two fixes came out of this step:
+- While preparing it: discovery used to list CLI threads too. A Loom pane runs `--no-daemon`, so "codex" could have meant a pane `codex queue` never reaches. Discovery now lists desktop threads only (5.6). rc1 already had this.
+- From the run: Codex passed `me="codex-demo-f0bf"`, as the wake line suggests, and `whoami` returned at `me` before reading `_meta`. That lost the human signal of a turn the user started and never recorded whether the thread can be woken. `_meta` now wins for Codex, and `TestCodexHumanTurn` passes `me`.
+
+The installed copy was updated to `v0.1.0-rc2`, with the second fix, by re-running setup. It found nothing to change and replaced only the executable.
+
+Still open: `install.sh` has only been read, not run, because Git Bash on Windows reports MINGW. Its first run is the macOS and Linux CI job, which needs the GitHub repo. The `<owner>` placeholder in the install lines waits for the same repo.
+
 ---
 
 ## 8. Stack
