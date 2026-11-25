@@ -1,5 +1,5 @@
 # agentlink installer for Windows. Run it with:
-#   irm https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/master/install.ps1 | iex
 # It downloads one executable, checks its SHA-256 against the release's
 # checksums.txt, and runs `agentlink setup`, which shows what it will change
 # and asks once. Nothing else is installed and nothing keeps running.

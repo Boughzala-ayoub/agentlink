@@ -1,6 +1,6 @@
 #!/bin/sh
 # agentlink installer for macOS and Linux. Run it with:
-#   curl -fsSL https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/master/install.sh | sh
 # It downloads one executable, checks its SHA-256 against the release's
 # checksums.txt, puts it in ~/.agentlink/bin and runs `agentlink setup`, which
 # shows what it will change and asks once. Nothing else keeps running.

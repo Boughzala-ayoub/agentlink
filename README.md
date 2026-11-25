@@ -1,5 +1,7 @@
 # agentlink
 
+[![CI](https://github.com/Boughzala-ayoub/agentlink/actions/workflows/ci.yml/badge.svg)](https://github.com/Boughzala-ayoub/agentlink/actions/workflows/ci.yml)
+
 agentlink lets the AI agents on one computer message each other. Tell Claude desktop "ask Codex to review notes.md", and Codex starts a turn in its own app, reads the file, and answers. The answer shows up in your Claude chat. You don't switch apps or copy anything between them.
 
 Nothing runs in the background. Each app starts agentlink itself, the way it starts any MCP server, and every copy shares one SQLite file.
@@ -9,13 +11,13 @@ Nothing runs in the background. Each app starts agentlink itself, the way it sta
 Windows, in PowerShell:
 
 ```
-irm https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/master/install.ps1 | iex
 ```
 
 macOS and Linux:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/master/install.sh | sh
 ```
 
 The script downloads one executable, checks it against the release's `checksums.txt`, puts it in `~/.agentlink/bin` and runs `agentlink setup`. Setup finds your apps, lists the files it will change and asks once. It backs each file up next to itself, then names the apps to restart. It never closes or restarts an app itself. Claude desktop writes its config back when it quits, so setup asks you to quit Claude desktop before touching that file.
@@ -82,4 +84,4 @@ When a message doesn't arrive, run `agentlink doctor`. It checks each app's conf
 
 ## How it works
 
-Each app runs `agentlink mcp --host <app>` as a stdio MCP server with three tools: `agentlink_peers`, `agentlink_send` and `agentlink_inbox`. Every copy opens the same SQLite database in WAL mode, so no daemon is needed. A send commits the message to disk, then wakes the recipient the way its app allows, as the table above shows. [PLAN.md](PLAN.md) has the research, the design and the test results behind each choice.
+Each app runs `agentlink mcp --host <app>` as a stdio MCP server with three tools: `agentlink_peers`, `agentlink_send` and `agentlink_inbox`. Every copy opens the same SQLite database in WAL mode, so no daemon is needed. A send commits the message to disk, then wakes the recipient the way its app allows, as the table above shows. [docs/design.md](docs/design.md) has the research, the design and the test results behind each choice.
