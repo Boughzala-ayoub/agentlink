@@ -1,12 +1,12 @@
 # agentlink installer for Windows. Run it with:
-#   irm https://raw.githubusercontent.com/<owner>/agentlink/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.ps1 | iex
 # It downloads one executable, checks its SHA-256 against the release's
 # checksums.txt, and runs `agentlink setup`, which shows what it will change
 # and asks once. Nothing else is installed and nothing keeps running.
 & {
   $ErrorActionPreference = 'Stop'
   $ProgressPreference = 'SilentlyContinue'
-  $repo = if ($env:AGENTLINK_REPO) { $env:AGENTLINK_REPO } else { '<owner>/agentlink' }
+  $repo = if ($env:AGENTLINK_REPO) { $env:AGENTLINK_REPO } else { 'Boughzala-ayoub/agentlink' }
   $base = if ($env:AGENTLINK_BASE_URL) { $env:AGENTLINK_BASE_URL } else { "https://github.com/$repo/releases/latest/download" }
   $arch = 'amd64'
   try { if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { $arch = 'arm64' } } catch {}

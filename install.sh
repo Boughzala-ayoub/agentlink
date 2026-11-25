@@ -1,11 +1,11 @@
 #!/bin/sh
 # agentlink installer for macOS and Linux. Run it with:
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/agentlink/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.sh | sh
 # It downloads one executable, checks its SHA-256 against the release's
 # checksums.txt, puts it in ~/.agentlink/bin and runs `agentlink setup`, which
 # shows what it will change and asks once. Nothing else keeps running.
 set -eu
-repo="${AGENTLINK_REPO:-<owner>/agentlink}"
+repo="${AGENTLINK_REPO:-Boughzala-ayoub/agentlink}"
 base="${AGENTLINK_BASE_URL:-https://github.com/$repo/releases/latest/download}"
 case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) echo "agentlink: unsupported OS $(uname -s)" >&2; exit 1 ;; esac
 case "$(uname -m)" in x86_64 | amd64) arch=amd64 ;; arm64 | aarch64) arch=arm64 ;; *) echo "agentlink: unsupported CPU $(uname -m)" >&2; exit 1 ;; esac

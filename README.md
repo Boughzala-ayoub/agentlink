@@ -9,13 +9,13 @@ Nothing runs in the background. Each app starts agentlink itself, the way it sta
 Windows, in PowerShell:
 
 ```
-irm https://raw.githubusercontent.com/<owner>/agentlink/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.ps1 | iex
 ```
 
 macOS and Linux:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/<owner>/agentlink/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Boughzala-ayoub/agentlink/main/install.sh | sh
 ```
 
 The script downloads one executable, checks it against the release's `checksums.txt`, puts it in `~/.agentlink/bin` and runs `agentlink setup`. Setup finds your apps, lists the files it will change and asks once. It backs each file up next to itself, then names the apps to restart. It never closes or restarts an app itself. Claude desktop writes its config back when it quits, so setup asks you to quit Claude desktop before touching that file.
